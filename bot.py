@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 from openai import AsyncOpenAI
 
 # Load environment variables
@@ -42,6 +43,8 @@ if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
+    timeout=60.0, # 60 seconds timeout
+    max_retries=3, # Retry up to 3 times on connection error
 )
 
 def clean_response(text):
@@ -191,7 +194,17 @@ if __name__ == '__main__':
     if not TELEGRAM_TOKEN:
          print("Error: TELEGRAM_BOT_TOKEN not found.")
     else:
-        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        # Optimization:
+        # 1. concurrent_updates(True): Processes messages in parallel (AsyncIO) instead of one-by-one.
+        # 2. HTTPXRequest: Increases connection pool size to handle more simultaneous requests to Telegram.
+        t_request = HTTPXRequest(
+            connection_pool_size=20,  # Handle up to 20 concurrent connections to Telegram
+            read_timeout=20.0,
+            write_timeout=20.0,
+            connect_timeout=20.0
+        )
+        
+        application = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).concurrent_updates(True).build()
         
         start_handler = CommandHandler('start', start)
         about_handler = CommandHandler('about', about)
