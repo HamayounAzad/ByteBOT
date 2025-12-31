@@ -6,9 +6,10 @@ import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, Application
 from telegram.request import HTTPXRequest
 from openai import AsyncOpenAI
+import database  # Import our new database module
 
 # Load environment variables
 load_dotenv()
@@ -16,12 +17,20 @@ load_dotenv()
 # Configuration
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")  # Channel ID for logs
 
 # Clean keys if they exist
 if TELEGRAM_TOKEN:
     TELEGRAM_TOKEN = TELEGRAM_TOKEN.strip()
 if OPENROUTER_API_KEY:
     OPENROUTER_API_KEY = OPENROUTER_API_KEY.strip()
+
+# Try to convert LOG_CHANNEL_ID to int (safer for negative IDs like -100...)
+if LOG_CHANNEL_ID:
+    try:
+        LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
+    except ValueError:
+        pass # Keep as string if it's a username (e.g. @mychannel)
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
 
@@ -78,11 +87,57 @@ def clean_response(text):
         
     return text
 
+async def log_to_channel(context: ContextTypes.DEFAULT_TYPE, message: str):
+    """
+    Sends a log message to the configured channel.
+    """
+    if LOG_CHANNEL_ID:
+        try:
+            await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=message, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Failed to log to channel {LOG_CHANNEL_ID}: {e}")
+
+async def post_init(application: Application):
+    """
+    Called after the bot application is initialized.
+    Sends a startup message to the log channel.
+    """
+    if LOG_CHANNEL_ID:
+        try:
+            await application.bot.send_message(
+                chat_id=LOG_CHANNEL_ID, 
+                text="<b>🚀 ByteCode Bot Started!</b>\nI am now online and ready to serve users.",
+                parse_mode=ParseMode.HTML
+            )
+            logger.info(f"Startup message sent to channel {LOG_CHANNEL_ID}")
+        except Exception as e:
+            logger.error(f"Failed to send startup message to channel {LOG_CHANNEL_ID}: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handler for the /start command.
     """
     user = update.effective_user
+    
+    # Track user in database
+    is_new = database.update_user(
+        user.id, 
+        user.username, 
+        user.first_name, 
+        user.language_code
+    )
+    
+    # If new user, notify admin channel
+    if is_new:
+        log_msg = (
+            f"<b>🆕 New User Joined!</b>\n"
+            f"<b>Name:</b> {html.escape(user.first_name)}\n"
+            f"<b>Username:</b> @{user.username if user.username else 'N/A'}\n"
+            f"<b>ID:</b> {user.id}\n"
+            f"<b>Lang:</b> {user.language_code}"
+        )
+        await log_to_channel(context, log_msg)
+
     # Escape user name to avoid HTML parsing errors if name contains < or >
     safe_first_name = html.escape(user.first_name)
     welcome_message = (
@@ -95,6 +150,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=welcome_message,
         parse_mode=ParseMode.HTML
     )
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handler for the /stats command. Sends stats to the chat and the log channel.
+    """
+    stats_data = database.get_statistics()
+    
+    top_users_text = ""
+    for u in stats_data['top_users']:
+        username = f"@{u[0]}" if u[0] else u[1]  # Username or First Name
+        top_users_text += f"• {html.escape(str(username))}: {u[2]} msgs\n"
+    
+    stats_msg = (
+        f"<b>📊 ByteCode Statistics</b>\n\n"
+        f"<b>👥 Total Users:</b> {stats_data['total_users']}\n"
+        f"<b>🔥 Active (24h):</b> {stats_data['active_24h']}\n\n"
+        f"<b>🏆 Top Active Users:</b>\n{top_users_text}"
+    )
+    
+    # Send to the user who requested it
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=stats_msg, parse_mode=ParseMode.HTML)
+    
+    # Also log to channel that stats were requested
+    await log_to_channel(context, f"📈 Stats requested by {update.effective_user.first_name}\n\n{stats_msg}")
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -111,6 +190,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     user_message = update.message.text
     chat_id = update.effective_chat.id
+    user = update.effective_user
+    
+    # Track user activity (update last_seen and increment message count)
+    database.update_user(
+        user.id, 
+        user.username, 
+        user.first_name, 
+        user.language_code
+    )
 
     # Send a "typing..." action so the user knows the bot is thinking
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -194,6 +282,9 @@ if __name__ == '__main__':
     if not TELEGRAM_TOKEN:
          print("Error: TELEGRAM_BOT_TOKEN not found.")
     else:
+        # Initialize Database
+        database.init_db()
+        
         # Optimization:
         # 1. concurrent_updates(True): Processes messages in parallel (AsyncIO) instead of one-by-one.
         # 2. HTTPXRequest: Increases connection pool size to handle more simultaneous requests to Telegram.
@@ -204,15 +295,17 @@ if __name__ == '__main__':
             connect_timeout=20.0
         )
         
-        application = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).concurrent_updates(True).build()
+        application = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).concurrent_updates(True).post_init(post_init).build()
         
         start_handler = CommandHandler('start', start)
         about_handler = CommandHandler('about', about)
+        stats_handler = CommandHandler('stats', stats)
         message_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
         
         # Register handlers
         application.add_handler(start_handler)
         application.add_handler(about_handler)
+        application.add_handler(stats_handler)
         application.add_handler(message_handler)
         
         logger.info("Bot is starting...")
