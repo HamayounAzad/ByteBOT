@@ -211,4 +211,6 @@ if __name__ == '__main__':
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        application.run_polling()
+        # stop_signals=[] prevents "ValueError: signal only works in main thread"
+        # or "RuntimeError" when running in non-main threads (like Streamlit)
+        application.run_polling(stop_signals=[])
