@@ -15,6 +15,13 @@ load_dotenv()
 # Configuration
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# Clean keys if they exist
+if TELEGRAM_TOKEN:
+    TELEGRAM_TOKEN = TELEGRAM_TOKEN.strip()
+if OPENROUTER_API_KEY:
+    OPENROUTER_API_KEY = OPENROUTER_API_KEY.strip()
+
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
 
 # Logging setup
@@ -167,9 +174,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error calling OpenRouter: {e}")
+        error_message = "Sorry, I encountered an error while processing your request."
+        
+        # Check if it's an authentication error
+        if "401" in str(e):
+            logger.error("Invalid OpenRouter API Key. Please check your .env file.")
+            error_message = "⚠️ System Error: Invalid API Key. Please contact the administrator."
+            
         await context.bot.send_message(
             chat_id=chat_id, 
-            text="Sorry, I encountered an error while processing your request."
+            text=error_message
         )
 
 if __name__ == '__main__':
