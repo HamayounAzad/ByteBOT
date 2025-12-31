@@ -203,4 +203,12 @@ if __name__ == '__main__':
         application.add_handler(message_handler)
         
         logger.info("Bot is starting...")
+
+        # Fix for "There is no current event loop" error in some environments (e.g. Streamlit Cloud)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         application.run_polling()
