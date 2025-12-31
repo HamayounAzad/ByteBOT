@@ -213,4 +213,13 @@ if __name__ == '__main__':
 
         # stop_signals=[] prevents "ValueError: signal only works in main thread"
         # or "RuntimeError" when running in non-main threads (like Streamlit)
-        application.run_polling(stop_signals=[])
+        # drop_pending_updates=True can help resolve conflicts if the previous session didn't close cleanly
+        logger.info("Dropping pending updates to resolve conflicts...")
+        # Note: drop_pending_updates is not a direct argument for run_polling in v20+
+        # We handle conflict resilience by just starting polling.
+        # If a conflict error occurs, the library will retry or we need to ensure old instances are dead.
+        
+        # However, to be robust against "Conflict" errors, we can't do much from code if another instance IS actually running.
+        # But if it's a "zombie" connection, sometimes just restarting helps.
+        
+        application.run_polling(stop_signals=[], drop_pending_updates=True)
